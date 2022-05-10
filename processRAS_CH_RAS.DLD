@@ -1,0 +1,181 @@
+Dim RASSWbuffer As String * RASSWbuffersize
+'Dim RASexample As Long
+Public PPSEventString As String * RASSWBuffersize
+Public requestPPS As Boolean 
+Public PPSstage As Long
+Public PPSSampleCount As Long
+Public PPSNextSample As Long
+Dim PPSStartTime As Long
+Dim PPSStartupTime As Long 
+Dim PPSSampleStart As Long 
+Dim PPSSampleInterval As Long
+Dim cmd As String * 32
+DataTable (RAS,1,500) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (1,PPSEventString,String)
+EndTable
+
+Sub initRAS()
+  SerialOpen (RASPort,RASBAUD,16,0,RASHWbuffersize)
+  requestPPS=False
+  PPSstage=0 
+  PPSStartTime=0 
+  PPSStartupTime=10 'in seconds
+  PPSSampleInterval=5400  'in seconds
+EndSub 
+
+
+Sub processRAS()
+  If PPSstage=0 AND requestPPS=True Then
+    requestPPS=False
+    PPSSampleCount=1
+    PPSStartTime=Status.Timestamp(0,0)
+    PPSEventString= "Initalizaing PPS" : CallTable RAS
+    PPSstage=1 
+  EndIf
+  If PPSstage=1 Then
+      PPSEventString= "Waking PPS" : CallTable RAS
+      If SerialOut(RASPort, CHR(03), "WTS", 5, 200)=0 Then PPSstage=6
+      PPSstage=2
+      PPSStartTime=Status.Timestamp(0,0)
+  EndIf
+
+If PPSstage=2 Then
+    PPSEventString= "Aligning to Home Port" : CallTable RAS
+    If SerialOut(RASPort, "HOME"+CRLF, "WTS", 5, 12000)=0 Then PPSstage=6
+    PPSstage=3
+EndIf 
+
+If PPSstage=3
+    PPSEventString= "Setting PPS Sample Parameters" : CallTable RAS
+    cmd="set water 500"
+    PPSEventString= "Setting Water Flush Settings" : CallTable RAS
+    If SerialOut(RASPort, cmd+CRLF, "Water", 5, 1000)=0 Then PPSstage=6
+    cmd="set sample 2000 125 115 20"
+    PPSEventString= "Setting Sample Settings" : CallTable RAS
+    If SerialOut(RASPort, cmd+CRLF, "Sample", 5, 1000)=0 Then PPSstage=6
+    PPSEventString= "Starting PPS Deployment" : CallTable RAS
+    If SerialOut(RASPort, "START_DEPLOY"+CRLF, "Deployment", 5, 1000)=0 Then PPSstage=6
+    PPSstage=4
+EndIf
+
+If PPSstage=4 Then 
+  PPSSampleStart=Status.Timestamp(0,0)
+  PPSEventString= "Starting PPS Sampling" : CallTable RAS
+  If SerialOut(RASPort, CHR(03), "WTS", 5, 200)=0 Then PPSstage=6
+  cmd="set fixative 10"' turn fixative flush volume back up for DNA/RNA Samples in next sample loop
+  PPSEventString= "Turning Fixative Valve On" : CallTable RAS
+  If SerialOut(RASPort, cmd+CRLF, "Fixative", 5, 1000)=0 Then PPSstage=6
+  If SerialOut(RASPort, CHR(03), "WTS", 5, 200)=0 Then PPSstage=6
+  Sprintf(PPSEventString,"Taking Sample %d",PPSSampleCount) : CallTable RAS
+  If SerialOut(RASPort, "sample"+CRLF, "comp", 5, 150000)=0 Then PPSstage=6 '1st Sample of DNA/RNA duplicates'
+  PPSSampleCount=PPSSampleCount+1
+  PPSEventString= "Waking PPS" : CallTable RAS
+  If SerialOut(RASPort, CHR(03), "WTS", 5, 200)=0 Then PPSstage=6
+  Sprintf(PPSEventString,"Taking Sample %d",PPSSampleCount) : CallTable RAS
+  If SerialOut(RASPort, "sample"+CRLF, "comp", 5, 150000)=0 Then PPSstage=6 '2nd Sample of DNA/RNA duplicates'
+  PPSSampleCount=PPSSampleCount+1
+   PPSEventString= "Waking PPS" : CallTable RAS
+  If SerialOut(RASPort, CHR(03), "WTS", 5, 200)=0 Then PPSstage=6
+   PPSEventString= "Turning Fixative Valve Off" : CallTable RAS
+  cmd="set fixative 0"' turn fixative flush to 0 for DA sample
+  If SerialOut(RASPort, cmd+CRLF, "Fixative", 5, 1000)=0 Then PPSstage=6
+  If SerialOut(RASPort, CHR(03), "WTS", 5, 200)=0 Then PPSstage=6 'Makes sure the PPS prompt is ready for  the 3rd sample start
+  Sprintf(PPSEventString,"Taking Sample %d",PPSSampleCount) : CallTable RAS
+  If SerialOut(RASPort, "sample"+CRLF, "comp", 5, 150000)=0 Then PPSstage=6 'Sample for particulate DA
+  PPSSampleCount=PPSSampleCount+1
+  PPSEventString= "PPS Waiting for Next Sampling Period" : CallTable RAS 
+  PPSstage=5
+EndIf
+
+If PPSstage=5 
+    PPSNextSample=((PPSSampleStart+PPSSampleInterval)-Status.TimeStamp(0,0))/60 'time until next sampling period in minutes
+EndIf
+'
+'While PPSstage<>5 AND PPSstage>0 
+'  PPSNextSample="Currently Sampling"
+'Wend 
+'
+'While PPSstage=0 
+'  PPSNextSample="PPS Not Deployed"
+'Wend
+
+If PPSstage=5 AND PPSSampleCount>22 Then
+   PPSEventString= "All PPS Samples Taken" : CallTable RAS
+   PPSstage=6 
+EndIf 
+
+If PPSstage=5 AND Status.Timestamp(0,0)> PPSSampleStart+PPSSampleInterval Then 
+  PPSstage=4
+EndIf 
+
+If PPSstage=6 Then
+  PPSEventString= "PPS Deployment Complete" : CallTable RAS
+  SerialOut(RASPort, "sleep", "...", 2, 1000)
+  PPSEventString= "Putting PPS to Sleep" : CallTable RAS
+  PPSstage=0 
+EndIf 
+      
+
+  Dim RAStempbuffer As String * RASSWbuffersize
+' RASexample = FileOpen ("CPU:Testline1.txt","r",0)
+ ' debugmessage="RASexample="+RASexample : Call Debug()
+'  FileRead (RASexample,RASSWbuffer,RASSWbuffersize)
+' FileClose (RASexample)
+  debugmessage="read from file="+RASSWbuffer : Call Debug()
+  Dim Line As String *100
+  Dim EOL As Long
+  Dim Stringmarker1 As Long = 0
+  Dim Stringmarker2 As Long = 0
+  Dim Stringmarker3 As Long = 0
+  Dim Stringmarker4 As Long = 0
+  Dim Stringmarker5 As Long = 0
+  Dim Stringmarker6 As Long = 0
+  Dim nbytes As Long
+  Dim rbytes As Long
+  
+  nbytes = SerialInChk (RASPort)
+  rbytes=SerialInBlock (RASPort,RAStempbuffer,nbytes)
+  If rbytes=0 Then ExitSub
+  RAStempbuffer(1,1,rbytes+1)=CHR(0)
+  
+  RASSWbuffer = RASSWbuffer&RAStempbuffer
+  debugmessage="RASSWbuffer - +"+rbytes+"bytes ="+RASSWbuffer : Call Debug()
+
+  EOL=1   
+  While (EOL>0)
+    EOL = InStr (1,RASSWbuffer,CHR(10),2)
+    debugmessage="EOL="+EOL : Call Debug()
+    If EOL>0 Then
+      Line = Left(RASSWbuffer,EOL)
+      RASSWbuffer = Right(RASSWbuffer,Len(RASSWbuffer)-EOL)
+      debugmessage="Line="+Line : Call Debug()
+  ' 
+     Stringmarker1 = InStr (1,Line,"starting",2)
+     Stringmarker2 = InStr (1,Line,"Result:",2)
+     Stringmarker3 = InStr (1,Line,"Waiting",2)
+      Stringmarker4 = InStr (1,Line,"FLUSH",2)
+      Stringmarker5 = InStr (1,Line,"PUMPING",2)
+      Stringmarker6 = InStr (1,Line,"completed",2)
+      If Stringmarker6<>0 Then 
+         PPSSampleCount=PPSSampleCount+1
+      EndIf
+     ' If Stringmarker1<>0 OR Stringmarker2<>0 OR Stringmarker3<>0 OR Stringmarker4<>0 OR Stringmarker5<>0 Then
+      '  PPSEventString=Line
+      '  CallTable RAS 
+      'EndIf
+    EndIf
+  Wend
+EndSub    
+
+    
+    
+    
+    
+
+
+
+
+  
+
+
+
